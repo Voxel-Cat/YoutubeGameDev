@@ -12,12 +12,7 @@ var _turn = -1
 
 @rpc
 func _log(what):
-	var text = ""
-	if typeof(what) == TYPE_DICTIONARY:
-		text = JSON.stringify(what)  # Convert dictionary to readable text
-	else:
-		text = str(what)  # Convert any value to string
-
+	var text = what["name"]
 	$HBoxContainer/RichTextLabel.add_text(text + "\n")
 
 
