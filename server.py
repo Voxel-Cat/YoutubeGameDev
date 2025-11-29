@@ -2,98 +2,177 @@ import asyncio
 import json
 import websockets
 import uuid
+import traceback
 
-connected_players = {}   # player_id -> websocket
-player_names = {}        # player_id -> name
-player_positions = {}    # player_id -> {x,y}
+HOST = "localhost"
+PORT = 8765
+
+connected_players = {}
+player_names = {}
+player_order = []
+turn_index = 0
 
 
-async def send_to_all(packet, except_ws=None):
+def make_player_info(pid):
+    return {"id": pid, "name": player_names.get(pid, "Player")}
+
+
+async def broadcast(packet, except_ws=None):
     """Send packet to all players except optional one."""
     message = json.dumps(packet)
-    for pid, ws in connected_players.items():
-        if ws != except_ws:
+    for pid, ws in list(connected_players.items()):
+        if ws is not except_ws:
             try:
                 await ws.send(message)
             except:
                 pass
 
 
+async def send_player_list():
+    """Sync full player list + turn."""
+    players = [make_player_info(pid) for pid in player_order]
+    await broadcast({
+        "type": "player_list",
+        "players": players,
+        "turn_index": turn_index
+    })
+
+
 async def handle_client(ws):
-    # Assign unique ID
+    global turn_index
+
     player_id = str(uuid.uuid4())
     connected_players[player_id] = ws
-    player_positions[player_id] = {"x": 0, "y": 0}
+    player_names[player_id] = "Player"
+    player_order.append(player_id)
 
-    print(f"[JOIN] Player {player_id}")
-
-    # Send initial ID to client
-    await ws.send(json.dumps({
-        "type": "init",
-        "id": player_id
-    }))
+    print(f"[JOIN] {player_id} connected")
 
     try:
-        async for msg in ws:
-            data = json.loads(msg)
+        await ws.send(json.dumps({"type": "init", "id": player_id}))
+    except:
+        pass
 
-            if data["type"] == "join":
-                # Player sent name
-                player_names[player_id] = data["name"]
-                print(f"[NAME] {player_id} is {data['name']}")
+    await broadcast({
+        "type": "player_joined",
+        "id": player_id,
+        "name": player_names[player_id]
+    }, except_ws=ws)
 
-                # Tell other players about new player
-                await send_to_all({
+    await send_player_list()
+
+    try:
+        async for raw in ws:
+            try:
+                data = json.loads(raw)
+            except:
+                print("[ERROR] Invalid JSON:", raw)
+                continue
+
+            typ = data.get("type")
+
+            if typ == "join":
+                name = data.get("name", "Player")
+                player_names[player_id] = name
+                print(f"[NAME] {player_id} -> {name}")
+
+                await broadcast({
                     "type": "player_joined",
                     "id": player_id,
-                    "name": data["name"],
-                    "pos": player_positions[player_id]
-                }, except_ws=ws)
+                    "name": name
+                })
 
-                # Send all existing players to new player
-                for pid in connected_players:
-                    if pid == player_id:
-                        continue
+                await send_player_list()
+
+            elif typ == "action":
+                action = data.get("action")
+
+                if len(player_order) == 0:
+                    continue
+
+                current_pid = player_order[turn_index]
+
+                if current_pid != player_id:
                     await ws.send(json.dumps({
-                        "type": "player_joined",
-                        "id": pid,
-                        "name": player_names.get(pid, "Player"),
-                        "pos": player_positions[pid]
+                        "type": "action_rejected",
+                        "reason": "not_your_turn",
+                        "current_player": current_pid
                     }))
+                    continue
 
-            elif data["type"] == "move":
-                # Update and broadcast movement
-                player_positions[player_id] = {"x": data["x"], "y": data["y"]}
+                if action not in ("roll", "pass"):
+                    await ws.send(json.dumps({
+                        "type": "action_rejected",
+                        "reason": "invalid_action"
+                    }))
+                    continue
 
-                await send_to_all({
+                import random
+                val = random.randint(0, 99)
+
+                await broadcast({
+                    "type": "action",
+                    "player_id": player_id,
+                    "action": action,
+                    "value": val,
+                    "player_name": player_names[player_id]
+                })
+
+                turn_index = (turn_index + 1) % len(player_order)
+                await broadcast({
+                    "type": "turn_update",
+                    "turn_index": turn_index
+                })
+
+            elif typ == "move":
+                x = data.get("x", 0)
+                y = data.get("y", 0)
+                await broadcast({
                     "type": "move",
                     "id": player_id,
-                    "x": data["x"],
-                    "y": data["y"]
+                    "x": x,
+                    "y": y
                 }, except_ws=ws)
 
+            else:
+                print("[WARN] Unknown type:", typ)
+
     except websockets.ConnectionClosed:
-        print(f"[QUIT] Player {player_id} disconnected")
-
+        pass
+    except Exception:
+        traceback.print_exc()
     finally:
-        # Remove player
-        del connected_players[player_id]
-        del player_positions[player_id]
-        name = player_names.get(player_id, "Player")
-        if player_id in player_names:
-            del player_names[player_id]
+        print(f"[QUIT] {player_id} disconnected")
 
-        # Notify others
-        await send_to_all({
+        if player_id in connected_players:
+            del connected_players[player_id]
+        name = player_names.pop(player_id, "Player")
+
+        if player_id in player_order:
+            idx = player_order.index(player_id)
+            player_order.remove(player_id)
+
+            if len(player_order) == 0:
+                turn_index = 0
+            else:
+                if idx < turn_index:
+                    turn_index -= 1
+                elif idx == turn_index:
+                    turn_index %= len(player_order)
+
+        await broadcast({
             "type": "player_left",
             "id": player_id,
             "name": name
         })
 
+        await send_player_list()
+
 
 async def main():
-    async with websockets.serve(handle_client, "localhost", 8765):
-        print("Multiplayer WebSocket server running on ws://localhost:8765")
+    print(f"Starting server on ws://{HOST}:{PORT}")
+
+    async with websockets.serve(handle_client, HOST, PORT):
         await asyncio.Future()
 
 
