@@ -10,9 +10,9 @@ config_version=5
 
 [application]
 
-config/name="Voltarian MMO"
-config/description="A MMO Created by Voltarian Technologies using Godot "
-config/tags=PackedStringArray("MMO", "VoltaTECH", "WebSocket")
+config/name="Challenge MMO"
+config/description="A MMO Created by Voxel_Cat, Voltaccept and a few other friends using GODOT 4.4.1"
+config/tags=PackedStringArray("MassivelyMultiplayerOnline", "GameDev", "WebSockets", "Challenges", "LiveStreams", "Punishments")
 run/main_scene="res://scene/combo.tscn"
 config/features=PackedStringArray("4.4")
 config/icon="res://icon.webp"
