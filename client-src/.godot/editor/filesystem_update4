@@ -3,3 +3,4 @@ res://scene/game.tscn
 res://scene/main.tscn
 res://script/main.gd
 res://script/game.gd
+res://script/combo.gd
