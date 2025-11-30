@@ -1,0 +1,11 @@
+{
+  "stayd": {
+    "uuid": "24b8ae71-4b9f-53ea-a9ea-ca510c539cbe",
+    "display_name": "stayd",
+    "os_username": "stayd",
+    "position": {
+      "x": 400.0,
+      "y": 300.0
+    }
+  }
+}

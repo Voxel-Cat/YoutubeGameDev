@@ -4,12 +4,35 @@ import websockets
 import uuid
 import traceback
 import hashlib
+import os
 
 HOST = "localhost"
 PORT = 8765
 
 connected_players = {}  # ws -> player_data
 persistent_players = {}  # os_username -> {"uuid": str, "display_name": str, "position": dict}
+PLAYERS_FILE = "players_data.json"
+
+
+def load_persistent_data():
+    """Load player data from file."""
+    global persistent_players
+    if os.path.exists(PLAYERS_FILE):
+        try:
+            with open(PLAYERS_FILE, "r") as f:
+                persistent_players = json.load(f)
+            print(f"[LOAD] Loaded {len(persistent_players)} players from {PLAYERS_FILE}")
+        except Exception as e:
+            print(f"[ERROR] Failed to load players file: {e}")
+
+
+def save_persistent_data():
+    """Save player data to file."""
+    try:
+        with open(PLAYERS_FILE, "w") as f:
+            json.dump(persistent_players, f, indent=2)
+    except Exception as e:
+        print(f"[ERROR] Failed to save players file: {e}")
 
 
 def get_or_create_player(os_username: str, display_name: str = None) -> dict:
@@ -17,21 +40,27 @@ def get_or_create_player(os_username: str, display_name: str = None) -> dict:
     if os_username not in persistent_players:
         # Generate a consistent UUID based on the OS username
         # Using UUID5 with a namespace ensures the same username always gets the same UUID
-        namespace = uuid.UUID('6ba7b810-9dad-11d1-80b4-00c04fd430c8')  # DNS namespace
+        namespace = uuid.UUID(
+            '6ba7b810-9dad-11d1-80b4-00c04fd430c8')  # DNS namespace
         player_uuid = str(uuid.uuid5(namespace, os_username))
-        
+
         persistent_players[os_username] = {
             "uuid": player_uuid,
             "display_name": display_name or os_username,
             "os_username": os_username,
-            "position": {"x": 0.0, "y": 300.0}  # Start at ground level
+            "position": {
+                "x": 400.0,
+                "y": 300.0
+            }  # Start at center
         }
         print(f"[NEW PLAYER] Created {os_username} with UUID {player_uuid}")
-    elif display_name:
+        save_persistent_data()
+    elif display_name and display_name != persistent_players[os_username]["display_name"]:
         # Update display name if provided
         persistent_players[os_username]["display_name"] = display_name
         print(f"[UPDATE] {os_username} display name -> {display_name}")
-    
+        save_persistent_data()
+
     return persistent_players[os_username]
 
 
@@ -45,7 +74,16 @@ def make_player_info(player_uuid: str) -> dict:
                 "os_username": data["os_username"],
                 "position": data["position"]
             }
-    return {"id": player_uuid, "name": "Unknown", "os_username": "unknown", "position": {"x": 0, "y": 300}}
+    return {
+        "id": player_uuid,
+        "name": "Unknown",
+        "os_username": "unknown",
+        "position": {
+            "x": 400,
+            "y": 300
+        }
+    }
+
 
 async def broadcast(packet, except_ws=None):
     """Send packet to all players except optional one."""
@@ -60,11 +98,10 @@ async def broadcast(packet, except_ws=None):
 
 async def send_player_list():
     """Sync full player list."""
-    players = [make_player_info(data["uuid"]) for data in connected_players.values()]
-    await broadcast({
-        "type": "player_list",
-        "players": players
-    })
+    players = [
+        make_player_info(data["uuid"]) for data in connected_players.values()
+    ]
+    await broadcast({"type": "player_list", "players": players})
 
 
 async def handle_client(ws):
@@ -89,36 +126,42 @@ async def handle_client(ws):
                 display_name = data.get("display_name", "")
 
                 if not os_username:
-                    await ws.send(json.dumps({
-                        "type": "error",
-                        "message": "OS username required"
-                    }))
+                    await ws.send(
+                        json.dumps({
+                            "type": "error",
+                            "message": "OS username required"
+                        }))
                     continue
 
                 # Get or create persistent player
                 player_data = get_or_create_player(os_username, display_name)
                 player_uuid = player_data["uuid"]
-                
+
                 # Store connection
                 connected_players[ws] = player_data
 
-                print(f"[JOIN] {display_name} ({os_username}) -> UUID {player_uuid}")
+                print(
+                    f"[JOIN] {display_name} ({os_username}) -> UUID {player_uuid}"
+                )
 
-                await ws.send(json.dumps({
-                    "type": "init",
-                    "id": player_uuid,
-                    "os_username": os_username,
-                    "display_name": player_data["display_name"],
-                    "position": player_data["position"]
-                }))
+                await ws.send(
+                    json.dumps({
+                        "type": "init",
+                        "id": player_uuid,
+                        "os_username": os_username,
+                        "display_name": player_data["display_name"],
+                        "position": player_data["position"]
+                    }))
 
                 # Notify others
-                await broadcast({
-                    "type": "player_joined",
-                    "id": player_uuid,
-                    "name": player_data["display_name"],
-                    "position": player_data["position"]
-                }, except_ws=ws)
+                await broadcast(
+                    {
+                        "type": "player_joined",
+                        "id": player_uuid,
+                        "name": player_data["display_name"],
+                        "position": player_data["position"]
+                    },
+                    except_ws=ws)
 
                 await send_player_list()
                 break  # Exit this loop and enter main message loop
@@ -140,24 +183,27 @@ async def handle_client(ws):
                 new_display_name = data.get("display_name", "")
                 if new_display_name:
                     player_data["display_name"] = new_display_name
-                    print(f"[NAME CHANGE] {player_data['os_username']} -> {new_display_name}")
-                    
+                    print(
+                        f"[NAME CHANGE] {player_data['os_username']} -> {new_display_name}"
+                    )
+
                     await broadcast({
                         "type": "player_name_changed",
                         "id": player_uuid,
                         "name": new_display_name
                     })
-                    
+
                     await send_player_list()
 
             elif typ == "action":
                 action = data.get("action")
 
                 if action not in ("move_left", "move_right", "jump"):
-                    await ws.send(json.dumps({
-                        "type": "action_rejected",
-                        "reason": "invalid_action"
-                    }))
+                    await ws.send(
+                        json.dumps({
+                            "type": "action_rejected",
+                            "reason": "invalid_action"
+                        }))
                     continue
 
                 pos = player_data["position"]
@@ -168,7 +214,9 @@ async def handle_client(ws):
                 elif action == "jump":
                     pos["y"] -= 150.0  # Jump up (negative Y is up in 2D)
 
-                print(f"[ACTION] {player_data['display_name']}: {action} -> {pos}")
+                print(
+                    f"[ACTION] {player_data['display_name']}: {action} -> {pos}"
+                )
 
                 # Broadcast position update to all clients
                 await broadcast({
@@ -181,16 +229,18 @@ async def handle_client(ws):
             elif typ == "position_update":
                 x = data.get("x", player_data["position"]["x"])
                 y = data.get("y", player_data["position"]["y"])
-                
+
                 player_data["position"]["x"] = x
                 player_data["position"]["y"] = y
 
                 # Broadcast to other clients
-                await broadcast({
-                    "type": "position_update",
-                    "player_id": player_uuid,
-                    "position": player_data["position"]
-                }, except_ws=ws)
+                await broadcast(
+                    {
+                        "type": "position_update",
+                        "player_id": player_uuid,
+                        "position": player_data["position"]
+                    },
+                    except_ws=ws)
 
             else:
                 print("[WARN] Unknown type:", typ)
@@ -201,7 +251,9 @@ async def handle_client(ws):
         traceback.print_exc()
     finally:
         if player_data:
-            print(f"[DISCONNECT] {player_data['display_name']} ({player_data['os_username']})")
+            print(
+                f"[DISCONNECT] {player_data['display_name']} ({player_data['os_username']})"
+            )
 
             # Remove from connected players
             if ws in connected_players:
@@ -209,9 +261,8 @@ async def handle_client(ws):
 
             # Check if player has any other active connections
             player_still_connected = any(
-                data["uuid"] == player_uuid 
-                for data in connected_players.values()
-            )
+                data["uuid"] == player_uuid
+                for data in connected_players.values())
 
             if not player_still_connected:
                 await broadcast({
@@ -224,6 +275,7 @@ async def handle_client(ws):
 
 
 async def main():
+    load_persistent_data()
     print(f"Starting server on ws://{HOST}:{PORT}")
 
     async with websockets.serve(handle_client, HOST, PORT):
